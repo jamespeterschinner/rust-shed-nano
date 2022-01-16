@@ -80,6 +80,8 @@ I also found this [documentation](https://rustduino.shivammalhotra.dev/install) 
 Connect the arduino to a USB port and share the serial device with WSL2 via the
 `usbipd wsl list` and `usbipd wsl attach --busid <busid>` as described in the [microsoft docs](https://devblogs.microsoft.com/commandline/connecting-usb-devices-to-wsl/).
 
+(Use an admin powershell console)
+
 In a WSL2 shell check that the usb device exists:
 
 ```bash
@@ -96,6 +98,12 @@ Then check that there is a USB device:
 $ ls /dev/ttyUSB*
 
 # /dev/ttyUSB0
+```
+
+And then enable permissions on the above listed usb device
+
+```bash
+sudo chmod +777 /dev/ttyUSB0
 ```
 
 ## Step 4
