@@ -30,7 +30,9 @@ Physical Start and stop buttons exist for this system (connected to the arduino)
 
 The hardware supports 12bit resolution for the lighting level, however due to the some human/hardware limitations this is not realized. There are two main considerations in controlling the brightness of a given light. The first is the human perception of brightness is not linear, rather it is a curve descriped by the CIE colour standard, roughly speaking, it says that as a light source gets brighter we need a bigger change in lumens to see any difference.
 
-The second consideration is related to how the hardware updates a brightness. One unfortunate serious limitation of the TLC5947 chip is that when a new grayscale (GS) setting is latched in, the outputs are turned off until the internal counter ticks over to a new 12bit window. There is an inverse relationship between the TLCs output and the LDD-300 output so the result of this is that when latching in new GS values the lights all flash full brightness (a truely painful and aweful thing to look at). The solution to this is to toggle the reset pin on the TLC chip at the same time as latching in new GS values. This dramaticly improves the flashing issue but creates another subtle effect in that during a smooth change in brightness, the actual percieved brightness is effected by how fast (often Hz) the GS values are updated. Ideally these effects can be accounted for by the software.
+The second consideration is related to how the hardware updates a brightness. One unfortunate limitation of the TLC5947 chip is that when a new grayscale (GS) setting is latched in, the outputs are turned off until the internal counter ticks over to a new 12bit window. There is an inverse relationship between the TLCs output and the LDD-300 output so the result of this is that when latching in new GS values the lights all flash full brightness (a truely painful and awful thing to look at). The solution to this is to toggle the reset pin on the TLC chip at the same time as latching in new GS values. This dramaticly improves the flashing issue but creates another subtle effect in that during a smooth change in brightness, the actual percieved brightness is effected by how fast (often Hz) the GS values are updated. Ideally these effects can be accounted for by the software.
+
+An improved solution to the above listed problem is to use one of the PWM channels as feedback to time the latching of new GS values to the end of the 4096 bit window. This however would also be a slight compromise as the 12 channels are split into 3 groups of 4 each with slight timing offsets.
 
 ## Parts:
 
@@ -111,3 +113,20 @@ sudo chmod +777 /dev/ttyUSB0
 Specify this device when running `RAVEDUDE_PORT=/dev/ttyUSB0 cargo run`
 
 ###### Note: The ./cargo/config.toml  file specifes 'uno' as the ravedude run command, I think this is required because of the Duinotech nano using the same bootloader as found on the uno, the legitimate arduino nano uses a newer version.
+
+## Implementation logic
+
+In order to ensure the controller has the fastest / consistant time when updating the PWM outputs on the peripherial TLC5947 chip (for smooth dimming) other subroutine tasks need to be optimised (run as little as possbile as quickly as possible). 
+
+One source of inefficiency in the first implementaion was scanning the IO ports in a loop, this implementaions aims to improve this by making use of the hardware pin change interrupts. The debounce logic of which will now be explained.
+
+Inputs are buffered in fixed size array, where each element of the array represents the input events that were triggered during the time window where said input array index was active.
+
+There is a continiously running timmer which cycles though the elements of this input buffer, at the beginning of a new time window, the previous buffered input values are written to the pin change interrupt mask (which enables the interrupt) and the value is cleared making it ready to accumulate new input values.
+
+when the pin change interrupt routine occurs, we check that the routine was trigged by the rising edge of the input, disable the interrupt for said input (via the interrupt mask) and then continue with the handling of the input event. 
+
+The aim of this is to run the timers interrupt as little as practical while still keeping the variance of debounce times within human perceptual limits
+
+(Initial testing made ~80ms windows seem reasonable)
+

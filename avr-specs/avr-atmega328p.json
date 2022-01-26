@@ -7,9 +7,7 @@
   "exe-suffix": ".elf",
   "executables": true,
   "late-link-args": {
-    "gcc": [
-      "-lgcc"
-    ]
+    "gcc": ["-lgcc"]
   },
   "linker": "avr-gcc",
   "linker-is-gnu": true,
@@ -17,10 +15,7 @@
   "max-atomic-width": 8,
   "no-default-libraries": false,
   "pre-link-args": {
-    "gcc": [
-      "-mmcu=atmega328p",
-      "-Wl,--as-needed"
-    ]
+    "gcc": ["-mmcu=atmega328p", "-Wl,--as-needed"]
   },
   "target-c-int-width": "16",
   "target-pointer-width": "16"
