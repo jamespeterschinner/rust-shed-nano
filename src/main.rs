@@ -141,7 +141,7 @@ pub unsafe extern "avr-interrupt" fn __vector_4() {
         // Logic to ensure that we are triggering on the rising edge
         if inputs & !buffered_values > 0 {
             // Disables this interrupt routine for high inputs
-            PCMSK1::write(PCMSK1::read() ^ inputs);
+            PCMSK1::write(PCMSK1::read() & !inputs);
 
             // Store the current inputs in the input buffer to be
             // re enabled after the debounce interval
@@ -169,7 +169,7 @@ fn fan_start_input(inputs: u8) -> bool {
     // Start button is pressed
     (inputs & 0x8 > 0) &&
     // Stop button is not pressed 
-    (inputs & 0x10 == 0
+    (inputs & 0x10 == 0)
 }
 
 fn spi_write_value(value: u16) {
