@@ -17,15 +17,15 @@ pub enum LightingAction {
 use LightingAction::*;
 use LightingState::*;
 
-pub struct LightingController {
+pub struct LightingFSM {
     state: LightingState,
     soft_switching_delay: u8,
     delay_counter: u8,
 }
 
-impl LightingController {
+impl LightingFSM {
     pub const fn new(soft_switching_delay: u8) -> Self {
-        LightingController {
+        LightingFSM {
             state: LightingState::Disabled,
             soft_switching_delay,
             delay_counter: 0,
