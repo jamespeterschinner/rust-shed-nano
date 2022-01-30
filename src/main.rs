@@ -35,8 +35,6 @@ type LightToggleInputC0 = C0; //PCINT8
 type FanStartInputC3 = C3; //PCINT11
 type FanStopInputC4 = C4; //PCINT12
 
-
-
 static ENABLED_PINC_INTERRUPTS: u8 = 0b00011001;
 
 // Fan Stop is a normally closed contact
@@ -49,13 +47,11 @@ type FanPowerRelayOutputC2 = C2;
 type FanStartRelayOutputD4 = D4;
 type FanSpeedOneRelayOutputD6 = D6;
 type FanSpeedTwoRelayOutputD7 = D7;
-type OnboadLedOutputB5 = B5;
 
 // SPI Interface
 type TLC5947LatchOutputB2 = B2; // output
 type MOSIB3 = B3; // output
 type SCKB5 = B5; // output
-
 
 // Input debounce
 const INPUT_BUFFER_SIZE: usize = 3;
@@ -84,19 +80,38 @@ fn main() {
         //Pin Change Interrupt Control Register (enable for inputs)
         PCICR::set(PCICR::PCIE1);
 
+        // Disables the analogue to digital function on port c
+        ADCSRA::write(0);
+
+        // ACSR::unset(ACSR::ACD);
+        // ACSR::unset(ACSR::ACIE);
+        // DIDR1::write(0b11);
+        DIDR0::write(0b11); // This must be se inorder to use port C as output pins!
+
         // Outputs
         TLC5947LatchOutputB2::set_output();
+        TLC5947LatchOutputB2::set_low();
+
         LightRelayOutputC1::set_output();
+        LightRelayOutputC1::set_low();
+
         FanPowerRelayOutputC2::set_output();
+        FanPowerRelayOutputC2::set_low();
+
         FanStartRelayOutputD4::set_output();
+        FanStartRelayOutputD4::set_low();
+
         FanSpeedOneRelayOutputD6::set_output();
+        FanSpeedOneRelayOutputD6::set_low();
+
         FanSpeedTwoRelayOutputD7::set_output();
-        OnboadLedOutputB5::set_output();
+        FanSpeedTwoRelayOutputD7::set_low();
 
         // SPI interface
         MOSIB3::set_output();
         SCKB5::set_output();
-        
+        SCKB5::set_output();
+
         /*
         SPI settings bits 7 -> 0
         7 - interrupt enable
@@ -112,12 +127,10 @@ fn main() {
         // Note: the onboard LED (B5) is the same pin as the SCK
         // meaning that driving it high while SPI is enabled will
         // have strange effects (maybe break it?)
-        SPCR::write(0b0010000);
+        SPCR::write(0b01010011);
 
         // // sets the x2 SPI SCK frequency
         // SPSR::write(0x1);
-
-
 
         Timer16Setup::<Timer16>::new()
             .waveform_generation_mode(ClearOnTimerMatchOutputCompare)
@@ -146,8 +159,6 @@ fn main() {
 pub unsafe extern "avr-interrupt" fn __vector_11() {
     // 16bit (timer1) compare match interrupt
     without_interrupts(|| {
-        // OnboadLedOutputB5::toggle();
-
         INPUT_BUFFER_INDEX += 1;
         if INPUT_BUFFER_INDEX > INPUT_BUFFER_SIZE {
             INPUT_BUFFER_INDEX = 0;
@@ -156,13 +167,10 @@ pub unsafe extern "avr-interrupt" fn __vector_11() {
         // Enable the interrupts which were disabled previously
         PCMSK1::write(PCMSK1::read() | INPUT_BUFFER[INPUT_BUFFER_INDEX]);
 
+        // Clear the prior captured inputs
         INPUT_BUFFER[INPUT_BUFFER_INDEX] = 0;
 
-        match LIGHTING_FSM.clock() {
-            LightingAction::DisableRelay => OnboadLedOutputB5::set_low(),
-            // TODO: implement EnableLDD
-            _ => (),
-        }
+        perform_lighting_action(LIGHTING_FSM.clock());
     })
 }
 
@@ -182,14 +190,9 @@ pub unsafe extern "avr-interrupt" fn __vector_4() {
             INPUT_BUFFER[INPUT_BUFFER_INDEX] = buffered_values | inputs;
 
             // Do something with the input
-            // OnboadLedOutputB5::toggle();
 
             if light_toggle_input(inputs) {
-                match LIGHTING_FSM.toggle() {
-                    LightingAction::EnableRelay => OnboadLedOutputB5::set_high(),
-                    LightingAction::DisableRelay => OnboadLedOutputB5::set_low(),
-                    _ => (),
-                }
+                perform_lighting_action(LIGHTING_FSM.toggle());
             }
         }
     })
@@ -219,13 +222,43 @@ fn spi_write_value(value: u16) {
                 SPDR::write(byte_one);
                 llvm_asm!("nop"); // See: https://github.com/arduino/ArduinoCore-avr/blob/master/libraries/SPI/src/SPI.h#L216
                 while SPSR::is_clear(SPSR::SPIF) {}
+                SPDR::read();
+
                 SPDR::write(byte_two);
                 llvm_asm!("nop");
                 while SPSR::is_clear(SPSR::SPIF) {}
+                SPDR::read();
+
                 SPDR::write(byte_three);
                 llvm_asm!("nop");
                 while SPSR::is_clear(SPSR::SPIF) {}
+                SPDR::read();
             }
         }
     })
+}
+
+fn perform_lighting_action(action: LightingAction) {
+    without_interrupts(|| match action {
+        LightingAction::None => {}
+        LightingAction::EnableRelay => {
+            LightRelayOutputC1::set_high();
+        }
+        LightingAction::DisableRelay => {
+            LightRelayOutputC1::set_low();
+        }
+        LightingAction::EnableLDD => {
+            spi_write_value(0xFFF);
+            latch_spi_value()
+        }
+        LightingAction::DisableLDD => {
+            spi_write_value(0x000);
+            latch_spi_value()
+        }
+    })
+}
+
+fn latch_spi_value() {
+    TLC5947LatchOutputB2::set_high();
+    TLC5947LatchOutputB2::set_low();
 }

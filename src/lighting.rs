@@ -50,7 +50,7 @@ impl LightingFSM {
             self.delay_counter += 1
         }
 
-        if self.delay_counter == self.soft_switching_delay {
+        if self.delay_counter >= self.soft_switching_delay {
             let (new_state, output) = match self.state {
                 RelayEnableWait => (LDDEnabled, EnableLDD),
                 LDDShutdownWait => (Disabled, DisableRelay),
