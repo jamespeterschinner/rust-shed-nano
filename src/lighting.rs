@@ -47,7 +47,9 @@ impl LightingFSM {
 
     pub fn clock(&mut self) -> LightingAction {
         if self.state == RelayEnableWait || self.state == LDDShutdownWait {
-            self.delay_counter += 1
+            self.delay_counter += 1;
+        } else {
+            self.delay_counter = 0;
         }
 
         if self.delay_counter >= self.soft_switching_delay {
@@ -57,7 +59,6 @@ impl LightingFSM {
                 _ => (self.state, None),
             };
             self.state = new_state;
-            self.delay_counter = 0;
             return output;
         }
         return None;

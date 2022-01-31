@@ -62,18 +62,18 @@ impl FanFSM {
 
     pub fn clock(&mut self) -> FanAction {
         if self.state == VSDPowerUpWait || self.state == VSDPowerDownWait {
-            self.delay_counter += 1
+            self.delay_counter += 1;
+        } else {
+            self.delay_counter = 0;
         }
 
         if self.state == VSDPowerUpWait && self.delay_counter as u8 >= self.vsd_power_up_delay {
             self.state = FanHighSpeed;
-            self.delay_counter = 0;
             return RunHighSpeed
         }
 
         if self.state == VSDPowerDownWait && self.delay_counter >= self.vsd_power_down_delay{
             self.state = Disabled;
-            self.delay_counter = 0;
             return PowerDownVSD
         }
 
