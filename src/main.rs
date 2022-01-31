@@ -114,9 +114,7 @@ fn main() {
         SCKB5::set_output();
         SCKB5::set_output();
 
-        // Turns all PWN outputs off (0xFFF is off)
-        spi_write_value(0xFFF);
-
+        
         /*
         SPI settings bits 7 -> 0
         7 - interrupt enable
@@ -128,15 +126,18 @@ fn main() {
         1 - SCK frequency (0)
         0 - SCK frequency (0) (fastest)
         */
-
+        
         // Note: the onboard LED (B5) is the same pin as the SCK
         // meaning that driving it high while SPI is enabled will
         // have strange effects (maybe break it?)
         SPCR::write(0b01010011);
-
+        
         // // sets the x2 SPI SCK frequency
         // SPSR::write(0x1);
-
+        
+        // Turns all PWN outputs off (0xFFF is off)
+        spi_write_value(0xFFF);
+        
         Timer16Setup::<Timer16>::new()
             .waveform_generation_mode(ClearOnTimerMatchOutputCompare)
             .clock_source(Prescale1024)
@@ -176,7 +177,7 @@ pub unsafe extern "avr-interrupt" fn __vector_11() {
         INPUT_BUFFER[INPUT_BUFFER_INDEX] = 0;
 
         perform_lighting_action(LIGHTING_FSM.clock());
-        
+
         perform_fan_action(FAN_FSM.clock());
     })
 }
