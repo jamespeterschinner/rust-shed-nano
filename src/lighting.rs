@@ -8,10 +8,10 @@ enum LightingState {
 
 pub enum LightingAction {
     None,
-    EnableRelay,
-    DisableRelay,
-    EnableLDD,
-    DisableLDD,
+    PowerUpLDD,
+    PowerDownLDD,
+    EnableLDDControl,
+    DisableLDDControl,
 }
 
 use LightingAction::*;
@@ -35,11 +35,11 @@ impl LightingFSM {
     pub fn toggle(&mut self) -> LightingAction {
         let (new_state, output) = match self.state {
             // In disabled/shutting down state
-            Disabled => (RelayEnableWait, EnableRelay),
-            LDDShutdownWait => (LDDEnabled, EnableLDD),
+            Disabled => (RelayEnableWait, PowerUpLDD),
+            LDDShutdownWait => (LDDEnabled, EnableLDDControl),
             // In started/starting state
-            RelayEnableWait => (Disabled, DisableRelay),
-            LDDEnabled => (LDDShutdownWait, DisableLDD),
+            RelayEnableWait => (Disabled, PowerDownLDD),
+            LDDEnabled => (LDDShutdownWait, DisableLDDControl),
         };
         self.state = new_state;
         output
@@ -52,8 +52,8 @@ impl LightingFSM {
 
         if self.delay_counter >= self.soft_switching_delay {
             let (new_state, output) = match self.state {
-                RelayEnableWait => (LDDEnabled, EnableLDD),
-                LDDShutdownWait => (Disabled, DisableRelay),
+                RelayEnableWait => (LDDEnabled, EnableLDDControl),
+                LDDShutdownWait => (Disabled, PowerDownLDD),
                 _ => (self.state, None),
             };
             self.state = new_state;

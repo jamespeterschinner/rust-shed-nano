@@ -4,8 +4,10 @@
 #![feature(llvm_asm)]
 
 mod lighting;
+mod fan;
 
 use crate::lighting::{LightingAction, LightingFSM};
+use crate::fan::{FanAction, FanFSM};
 use ruduino::cores::atmega328p::port::*;
 use ruduino::cores::atmega328p::*;
 use ruduino::interrupt::without_interrupts;
@@ -45,8 +47,7 @@ static INVERTED_INPUTS: u8 = 0b00010000;
 type LightRelayOutputC1 = C1;
 type FanPowerRelayOutputC2 = C2;
 type FanStartRelayOutputD4 = D4;
-type FanSpeedOneRelayOutputD6 = D6;
-type FanSpeedTwoRelayOutputD7 = D7;
+type FanHighSpeedRelayOutputD6 = D6;
 
 // SPI Interface
 type TLC5947LatchOutputB2 = B2; // output
@@ -62,6 +63,9 @@ static mut INPUT_BUFFER_INDEX: usize = 0;
 static mut INPUT_BUFFER: [u8; INPUT_BUFFER_SIZE + 1] = [0; INPUT_BUFFER_SIZE + 1];
 
 static mut LIGHTING_FSM: LightingFSM = LightingFSM::new(5); // 500ms switching delay
+
+// 7 second VSD power up delay, 9000 == 15min power off delay
+static mut FAN_FSM: FanFSM = FanFSM::new(70, 9000);
 
 #[no_mangle]
 fn main() {
@@ -101,16 +105,17 @@ fn main() {
         FanStartRelayOutputD4::set_output();
         FanStartRelayOutputD4::set_low();
 
-        FanSpeedOneRelayOutputD6::set_output();
-        FanSpeedOneRelayOutputD6::set_low();
+        FanHighSpeedRelayOutputD6::set_output();
+        FanHighSpeedRelayOutputD6::set_low();
 
-        FanSpeedTwoRelayOutputD7::set_output();
-        FanSpeedTwoRelayOutputD7::set_low();
 
         // SPI interface
         MOSIB3::set_output();
         SCKB5::set_output();
         SCKB5::set_output();
+
+        // Turns all PWN outputs off (0xFFF is off)
+        spi_write_value(0xFFF);
 
         /*
         SPI settings bits 7 -> 0
@@ -171,6 +176,8 @@ pub unsafe extern "avr-interrupt" fn __vector_11() {
         INPUT_BUFFER[INPUT_BUFFER_INDEX] = 0;
 
         perform_lighting_action(LIGHTING_FSM.clock());
+        
+        perform_fan_action(FAN_FSM.clock());
     })
 }
 
@@ -194,6 +201,15 @@ pub unsafe extern "avr-interrupt" fn __vector_4() {
             if light_toggle_input(inputs) {
                 perform_lighting_action(LIGHTING_FSM.toggle());
             }
+
+            if fan_start_input(inputs) {
+                perform_fan_action(FAN_FSM.start());
+            }
+
+            if fan_stop_input(inputs) {
+                perform_fan_action(FAN_FSM.stop());
+            }
+            
         }
     })
 }
@@ -209,16 +225,22 @@ fn fan_start_input(inputs: u8) -> bool {
     (inputs & 0x10 == 0)
 }
 
+fn fan_stop_input(inputs: u8) -> bool {
+    inputs & 0x10 > 0
+}
+
+
+// value 0 == fully on, value 0xFFF = fully off 
 fn spi_write_value(value: u16) {
     without_interrupts(|| {
         // Precompute values, compacting 12 bits per u16 into
         // three u8's
         let byte_one = (value & 0xFF) as u8;
-        let byte_two = (value >> 8 & 0xF | value << 4 & 0xF0) as u8;
+        let byte_two = (value << 4 & 0xF0 | value >> 8 & 0x0F) as u8;
         let byte_three = (value >> 4 & 0xFF) as u8;
         // We really want this to go fast
         unsafe {
-            for _ in 0..8 {
+            for _ in 0..12 {
                 SPDR::write(byte_one);
                 llvm_asm!("nop"); // See: https://github.com/arduino/ArduinoCore-avr/blob/master/libraries/SPI/src/SPI.h#L216
                 while SPSR::is_clear(SPSR::SPIF) {}
@@ -239,23 +261,50 @@ fn spi_write_value(value: u16) {
 }
 
 fn perform_lighting_action(action: LightingAction) {
-    without_interrupts(|| match action {
+    match action {
         LightingAction::None => {}
-        LightingAction::EnableRelay => {
+        LightingAction::PowerUpLDD => {
             LightRelayOutputC1::set_high();
         }
-        LightingAction::DisableRelay => {
+        LightingAction::PowerDownLDD => {
             LightRelayOutputC1::set_low();
         }
-        LightingAction::EnableLDD => {
+        LightingAction::EnableLDDControl => {
+            spi_write_value(0x000);
+            latch_spi_value() // Keeping this seperate because we'll be doing this asynchronously (eventually)
+        }
+        LightingAction::DisableLDDControl => {
             spi_write_value(0xFFF);
             latch_spi_value()
         }
-        LightingAction::DisableLDD => {
-            spi_write_value(0x000);
-            latch_spi_value()
+    }
+  
+}
+
+
+
+fn perform_fan_action(action: FanAction) {
+     match action {
+        FanAction::None => {}
+        FanAction::PowerUpVSD => {
+            FanPowerRelayOutputC2::set_high();
         }
-    })
+        FanAction::PowerDownVSD => {
+            FanPowerRelayOutputC2::set_low();
+        }
+        FanAction::RunHighSpeed => {
+            FanStartRelayOutputD4::set_high();
+            FanHighSpeedRelayOutputD6::set_high();
+        }
+        FanAction::RunLowSpeed => {
+            FanStartRelayOutputD4::set_high();
+            FanHighSpeedRelayOutputD6::set_low();
+        }
+        FanAction::DisableVSD => {
+            FanStartRelayOutputD4::set_low();
+            FanHighSpeedRelayOutputD6::set_low();
+        }
+    }
 }
 
 fn latch_spi_value() {
