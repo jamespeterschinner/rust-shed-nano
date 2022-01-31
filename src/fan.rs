@@ -51,10 +51,9 @@ impl FanFSM {
 
     pub fn stop(&mut self) -> FanAction {
         let (new_state, output) = match self.state {
-            VSDPowerUpWait => (Disabled, PowerDownVSD),
-            FanLowSpeed => (VSDPowerDownWait, DisableVSD),
-            FanHighSpeed => (VSDPowerDownWait, DisableVSD),
-            _ => (self.state, None),
+            VSDPowerDownWait | Disabled => (self.state, None),
+            VSDPowerUpWait => (VSDPowerDownWait, None),
+            _ => (VSDPowerDownWait, DisableVSD),
         };
         self.state = new_state;
         output
