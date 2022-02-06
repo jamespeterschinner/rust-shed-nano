@@ -12,11 +12,7 @@ bench = false
 
 [dependencies]
 ruduino = "0.3.2"
-
-[dependencies.arduino-hal]
-git = "https://github.com/rahix/avr-hal"
-rev = "f84c0dff774c2292bc932b670955165161ecc7d1"
-features = ["arduino-nano"]
+avr-progmem = "0.1.2"
 
 [dependencies.avr-device]
 version = "0.3.1"
