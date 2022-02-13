@@ -1,20 +1,17 @@
-use crate::cie_correction::{CIE_DELAY, CIE_THRESHOLD};
-
 #[derive(PartialEq, Copy, Clone)]
 enum LightingState {
     Disabled,
-    RelayOnWait,
-    ChasingSetpoint { current_value: u16, setpoint: u16 },
+    RelayOnWait(u8),
+    ChasingSetpoint(u16, u16, u8),
     AtSetpoint(u16),
-    LDDShutdownWait,
+    LDDShuttingDown(u16, u8),
 }
 
 pub enum LightingAction {
     None,
-    TurnRelayOn { switch_latency: u16 },
+    TurnRelayOn,
     TurnRelayOff,
-    SetBrightness { brightness: u16, duration: u16 },
-    SetClock(u16),
+    SetBrightness(u16),
 }
 
 use LightingAction::*;
@@ -24,13 +21,17 @@ pub struct LightingFSM {
     state: LightingState,
 }
 
-// The maximum value which the LDD chips can be given with out
-// the latch timing getting out of sync
-const MAX_PWM_VALUE: u16 = 0xFD2;
+const LDD_OFF_PWM_VALUE: u16 = 4095;
 
-const INITIAL_ON_SETPOINT: u16 = 0xABC;
+const CIE_CORRECTION_SCALING_FACTOR: u16 = u16::MAX / LDD_OFF_PWM_VALUE;
 
-const SOFT_SWITCHING_DELAY: u16 = 0xFFFF;
+const MAX_PWM_VALUE: u16 = 4070;
+
+const INITIAL_ON_SETPOINT: u16 = 2900;
+
+const SOFT_SWITCHING_DELAY: u8 = 5;
+
+const RAMP_RATE: u16 = 15;
 
 impl LightingFSM {
     pub const fn new() -> Self {
@@ -40,31 +41,14 @@ impl LightingFSM {
     }
     pub fn toggle(&mut self) -> LightingAction {
         let (new_state, output) = match self.state {
-            Disabled => (
-                RelayOnWait,
-                TurnRelayOn {
-                    switch_latency: SOFT_SWITCHING_DELAY,
-                },
-            ),
-            LDDShutdownWait => initial_on(MAX_PWM_VALUE),
-            RelayOnWait => (Disabled, TurnRelayOff),
-            ChasingSetpoint {
-                current_value,
-                setpoint: MAX_PWM_VALUE,
-            } => initial_on(current_value),
-            ChasingSetpoint { current_value, .. } => (
-                ChasingSetpoint {
-                    current_value,
-                    setpoint: MAX_PWM_VALUE,
-                },
-                None,
-            ),
-            AtSetpoint(MAX_PWM_VALUE) => initial_on(MAX_PWM_VALUE),
-            AtSetpoint(current_value) => (
-                ChasingSetpoint {
-                    current_value,
-                    setpoint: MAX_PWM_VALUE,
-                },
+            Disabled => (RelayOnWait(SOFT_SWITCHING_DELAY), TurnRelayOn),
+            RelayOnWait(_) => (Disabled, TurnRelayOff),
+            ChasingSetpoint(current_brightness, _, count_down) => {
+                (LDDShuttingDown(current_brightness, count_down), None)
+            }
+            AtSetpoint(current_brightness) => (LDDShuttingDown(current_brightness, 10), None),
+            LDDShuttingDown(current_brightness, count_down) => (
+                ChasingSetpoint(current_brightness, INITIAL_ON_SETPOINT, count_down),
                 None,
             ),
         };
@@ -72,68 +56,85 @@ impl LightingFSM {
         output
     }
 
-    pub fn clock(&mut self) -> LightingAction {
+    pub fn slow_clock(&mut self) {
+        self.state = match self.state {
+            RelayOnWait(0) => ChasingSetpoint(MAX_PWM_VALUE, INITIAL_ON_SETPOINT, 0),
+            RelayOnWait(count) if count > 0 => RelayOnWait(count - 1),
+            _ => self.state,
+        };
+    }
+
+    pub fn fast_clock(&mut self) -> LightingAction {
         let (new_state, output) = match self.state {
-            RelayOnWait => initial_on(MAX_PWM_VALUE),
-            ChasingSetpoint {
-                current_value,
-                setpoint,
-            } => {
-                if current_value == setpoint {
-                    (AtSetpoint(current_value), SetClock(SOFT_SWITCHING_DELAY))
-                } else {
-                    let new_value = if current_value > setpoint {
-                        current_value - 1
-                    } else {
-                        current_value + 1
-                    };
-                    (
-                        ChasingSetpoint {
-                            current_value: new_value,
-                            setpoint,
-                        },
-                        SetBrightness {
-                            brightness: new_value,
-                            duration: look_up_duration(new_value),
-                        },
-                    )
-                }
-            }
-            AtSetpoint(MAX_PWM_VALUE) => (
-                LDDShutdownWait,
-                SetBrightness {
-                    brightness: 0xFFF,
-                    duration: SOFT_SWITCHING_DELAY,
-                },
+            LDDShuttingDown(LDD_OFF_PWM_VALUE, _) => (Disabled, TurnRelayOff),
+            LDDShuttingDown(current_brightness, _) if current_brightness >= MAX_PWM_VALUE => (
+                LDDShuttingDown(LDD_OFF_PWM_VALUE, 10),
+                SetBrightness(LDD_OFF_PWM_VALUE),
             ),
-            LDDShutdownWait => (Disabled, TurnRelayOff),
+            LDDShuttingDown(current_brightness, count_down) if count_down > 0 => {
+                (LDDShuttingDown(current_brightness, count_down - 1), None)
+            }
+            LDDShuttingDown(current_brightness, _count_down) => {
+                let (step, delay) = cie_correction(current_brightness);
+
+                let new_brightness = {
+                    let temp = current_brightness + step;
+                    if temp >= MAX_PWM_VALUE {
+                        MAX_PWM_VALUE
+                    } else {
+                        temp
+                    }
+                };
+
+                (
+                    LDDShuttingDown(new_brightness, delay),
+                    SetBrightness(new_brightness),
+                )
+            }
+            ChasingSetpoint(current_brightness, setpoint, _) if current_brightness == setpoint => {
+                (AtSetpoint(setpoint), None)
+            }
+            ChasingSetpoint(current_brightness, setpoint, 0) => {
+                let (step, delay) = cie_correction(current_brightness);
+
+                let new_brightness = if current_brightness < setpoint {
+                    let temp = current_brightness + step;
+                    if temp >= setpoint {
+                        setpoint
+                    } else {
+                        temp
+                    }
+                } else {
+                    if step >= current_brightness {
+                        setpoint
+                    } else {
+                        current_brightness - step
+                    }
+                };
+                (
+                    ChasingSetpoint(new_brightness, setpoint, delay),
+                    SetBrightness(new_brightness),
+                )
+            }
+            ChasingSetpoint(current_brightness, setpoint, count_down) if count_down > 0 => (
+                ChasingSetpoint(current_brightness, setpoint, count_down - 1),
+                None,
+            ),
             _ => (self.state, None),
         };
-
         self.state = new_state;
-        return output;
+        output
     }
 }
 
+// Crude approximation to calculate the rate of change
+// for a given brightness
 #[inline]
-fn initial_on(current_value: u16) -> (LightingState, LightingAction) {
-    (
-        ChasingSetpoint {
-            current_value,
-            setpoint: INITIAL_ON_SETPOINT,
-        },
-        SetBrightness {
-            brightness: MAX_PWM_VALUE,
-            duration: look_up_duration(MAX_PWM_VALUE),
-        },
-    )
-}
-
-fn look_up_duration(brightness: u16) -> u16 {
-    // if brightness <= CIE_THRESHOLD {
-    //     brightness + 10
-    // } else {
-    //     CIE_DELAY.load_at((brightness - CIE_THRESHOLD).into())
-    // }
-    30000
+fn cie_correction(brightness: u16) -> (u16, u8) {
+    let value: u16 = ((brightness + CIE_CORRECTION_SCALING_FACTOR) * 7) >> 11;
+    if value >= RAMP_RATE {
+        (1, (value -  RAMP_RATE) as u8)
+    } else {
+        (RAMP_RATE - value, 0)
+    }
 }

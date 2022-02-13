@@ -5,25 +5,18 @@
 
 mod fan;
 mod lighting;
-mod cie_correction;
 
 use crate::fan::{FanAction, FanFSM};
 use crate::lighting::{LightingAction, LightingFSM};
 use ruduino::cores::atmega328p::port::*;
 use ruduino::cores::atmega328p::*;
 use ruduino::interrupt::without_interrupts;
-use ruduino::modules::ClockSource16;
 use ruduino::modules::ClockSource8;
-use ruduino::modules::Timer16Setup;
 use ruduino::modules::Timer8Setup;
-use ruduino::modules::WaveformGenerationMode16;
 use ruduino::modules::WaveformGenerationMode8;
 
 use ruduino::Pin;
 use ruduino::Register;
-// use ruduino::RegisterBits;
-
-const CPU_FREQUENCY_HZ: u64 = 16_000_000;
 
 // The nameing convention used here is <name><Input|Output><Port & Pin>
 // the port and pin is included as is helps know which bits to use for
@@ -78,11 +71,6 @@ static mut INPUT_BUFFER_INDEX: usize = 0;
 static mut INPUT_BUFFER: [u8; INPUT_BUFFER_SIZE + 1] = [0; INPUT_BUFFER_SIZE + 1];
 
 static mut LIGHTING_FSM: LightingFSM = LightingFSM::new();
-
-// The last 3 bits of the TCCR1B register control the clock source
-// We'll allow this to be mutated so it can be set from the timers configuration
-// in main (save it for later so we can enable and disable the timer)
-static TCCR1B_CLOCK_ENABLE: u8 = 0b101;
 
 // 7 second VSD power up delay, 9000 == 15min power off delay
 static mut FAN_FSM: FanFSM = FanFSM::new(70, 9000);
@@ -171,27 +159,17 @@ fn main() {
             .clock_source(ClockSource8::Prescale1024)
             .output_compare_1(Some(0xFF))
             .configure();
-
-        // Faster high resolution timer for accurate PWM timing updates
-        // Initially configure it with no clock source as to not start the timer
-        Timer16Setup::<Timer16>::new()
-            .waveform_generation_mode(WaveformGenerationMode16::ClearOnTimerMatchOutputCompare)
-            .clock_source(ClockSource16::Prescale64)
-            .output_compare_1(Some(0xFFF))
-            .configure();
     });
 
-    loop {
-        // This is some double redundancy in terms of duplicating logic
-        // but we really wan't the fan to stop if the normally
-        // closed stop signal goes open circuit and potenitally there
-        // is an unknown bug in the other place where this is implemented.
-        // (we don't really want to debounce this input)
-        if FanStopInputC4::is_low() {
-            // Best practice would be to have a safety circuit which implemented this
-            // but the fan is in the roof and very inaccessible without tools
-            // in which case the circuit breaker immediatly next to the fan is sufficient
-            FanStartRelayOutputD4::set_low();
+    unsafe {
+        loop {
+            if EIMSK::read() == 0 {
+                // Means we don't write new data when there is 
+                // existing data to be latched in.
+                without_interrupts(|| {
+                    perform_lighting_action(LIGHTING_FSM.fast_clock());
+                })
+            }
         }
     }
 }
@@ -249,14 +227,6 @@ pub unsafe extern "avr-interrupt" fn __vector_4() {
     })
 }
 
-// 16 Bit timer routine for LED update timing
-#[no_mangle]
-pub unsafe extern "avr-interrupt" fn __vector_11() {
-    without_interrupts(|| {
-        perform_lighting_action(LIGHTING_FSM.clock());
-    })
-}
-
 // 8 Bit Timer routine used for slow tasks (debouncing user input)
 #[no_mangle]
 pub unsafe extern "avr-interrupt" fn __vector_14() {
@@ -273,6 +243,8 @@ pub unsafe extern "avr-interrupt" fn __vector_14() {
         INPUT_BUFFER[INPUT_BUFFER_INDEX] = 0;
 
         perform_fan_action(FAN_FSM.clock());
+
+        LIGHTING_FSM.slow_clock();
     })
 }
 
@@ -343,33 +315,17 @@ fn perform_lighting_action(action: LightingAction) {
     use LightingAction::*;
     match action {
         None => {}
-        TurnRelayOn { switch_latency } => {
+        TurnRelayOn => {
             LightRelayOutputC1::set_high();
-            trigger_timer_1_in(switch_latency);
         }
         TurnRelayOff => {
             LightRelayOutputC1::set_low();
         }
-        SetBrightness {
-            brightness,
-            duration,
-        } => {
+        SetBrightness(brightness) => {
             spi_write_value(brightness);
-            trigger_timer_1_in(duration);
             enable_latch_interrupt();
         }
-        SetClock(interval) => {
-            trigger_timer_1_in(interval);
-        }
     }
-}
-
-#[inline]
-fn trigger_timer_1_in(time_units: u16) {
-    TCCR1B::write(0x0); // Disable timer clock
-    TCNT1::write(0x0 as u16); // reset the timer
-    OCR1A::write(time_units); // update compare match interval
-    TCCR1B::write(TCCR1B_CLOCK_ENABLE); // Enable timer
 }
 
 #[inline]

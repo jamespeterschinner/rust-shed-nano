@@ -27,6 +27,7 @@ opt-level = "s"
 [profile.release]
 panic = "abort"
 codegen-units = 1
-debug = true
+overflow-checks = false
+debug = false
 lto = true
 opt-level = "s"

@@ -112,6 +112,8 @@ sudo chmod +777 /dev/ttyUSB0
 
 Specify this device when running `RAVEDUDE_PORT=/dev/ttyUSB0 cargo run`
 
+and for release `AVR_CPU_FREQUENCY_HZ=16000000 RAVEDUDE_PORT=/dev/ttyUSB1 cargo run --release`
+
 ###### Note: The ./cargo/config.toml  file specifes 'uno' as the ravedude run command, I think this is required because of the Duinotech nano using the same bootloader as found on the uno, the legitimate arduino nano uses a newer version.
 
 ## Implementation logic
