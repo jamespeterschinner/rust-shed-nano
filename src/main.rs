@@ -3,9 +3,11 @@
 #![feature(abi_avr_interrupt)]
 #![feature(llvm_asm)]
 
+mod encoder;
 mod fan;
 mod lighting;
 
+use crate::encoder::Encoder;
 use crate::fan::{FanAction, FanFSM};
 use crate::lighting::{LightingAction, LightingFSM};
 use ruduino::cores::atmega328p::port::*;
@@ -29,7 +31,7 @@ type TLC5947PWMFeedBackD2 = D2;
 // which latches in new PWM values, at the end of the
 // PWM window based upon this value 0 - 4096
 // initial testing 4010 seemed good
-static PWM_FEEDBACK_TIMING: u16 = 4010;
+static PWM_FEEDBACK_TIMING: u16 = 4040;
 
 /*
 Remember is that last value in the shift register, hence is written first.
@@ -38,7 +40,8 @@ Each byte is written MSB first.
 static PWM_FEEDBACK_BYTE_ONE: u8 = (PWM_FEEDBACK_TIMING >> 4) as u8 & 0xFF as u8;
 static PWM_FEEDBACK_BYTE_TWO: u8 = (PWM_FEEDBACK_TIMING << 4) as u8 & 0xF0 as u8;
 
-type EncoderInputD3 = D3;
+type EncoderAInputD3 = D3;
+type EncoderBInputC5 = C5;
 
 //PCINT8..14 -> PCI2 (Pin Change Interrupt 1)
 type LightToggleInputC0 = C0; //PCINT8
@@ -75,6 +78,8 @@ static mut LIGHTING_FSM: LightingFSM = LightingFSM::new();
 // 7 second VSD power up delay, 9000 == 15min power off delay
 static mut FAN_FSM: FanFSM = FanFSM::new(70, 9000);
 
+static mut ENCODER: Encoder = Encoder::new();
+
 #[no_mangle]
 fn main() {
     without_interrupts(|| {
@@ -83,7 +88,11 @@ fn main() {
         // Enables the pullup resistor
         TLC5947PWMFeedBackD2::set_high();
 
-        EncoderInputD3::set_input();
+        EncoderAInputD3::set_input();
+        EncoderAInputD3::set_high();
+
+        EncoderBInputC5::set_input();
+        EncoderBInputC5::set_high();
 
         // Last two bits set configure INT0 to
         // trigger on the rising edge
@@ -164,10 +173,12 @@ fn main() {
     unsafe {
         loop {
             if EIMSK::read() == 0 {
-                // Means we don't write new data when there is 
+                // Means we don't write new data when there is
                 // existing data to be latched in.
+                let encoder_change =
+                    ENCODER.read(EncoderAInputD3::is_high(), EncoderBInputC5::is_high());
                 without_interrupts(|| {
-                    perform_lighting_action(LIGHTING_FSM.fast_clock());
+                    perform_lighting_action(LIGHTING_FSM.fast_clock(encoder_change));
                 })
             }
         }
@@ -245,6 +256,8 @@ pub unsafe extern "avr-interrupt" fn __vector_14() {
         perform_fan_action(FAN_FSM.clock());
 
         LIGHTING_FSM.slow_clock();
+
+        ENCODER.clock();
     })
 }
 
